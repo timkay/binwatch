@@ -41,6 +41,8 @@ For example:
 
 ```docker run -it --rm --network host -e MYSQL_SERVER=alice:secret@sql.example.com binwatch```
 
+The user, password, and host default to root@127.0.0.1 (empty password).
+
 ## Sample Client
 
 A sample client is provided by client.pl. To run:
