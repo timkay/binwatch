@@ -10,8 +10,6 @@ use Socket;
 use IO::Select;
 use IO::Handle;
 
-$SIG{INT} = sub {die};
-
 {
     my($buffer);
     my $seq = 'C00';            # name each client for easier log reading
@@ -22,7 +20,7 @@ $SIG{INT} = sub {die};
 
     my $cmd = "mysqlbinlog -R --host=$HOST --user=$USER --password=$PASS --stop-never --base64-output=decode-rows ''";
     print "docker run --rm -it --network host binwatch $cmd\n" if $v;
-    open(my $binlog, "$cmd|") || die "mysqlbinlog: $!\n";
+    my $pid = open(my $binlog, "$cmd|") || die "mysqlbinlog: $!\n";
 
     my $port = ${BINWATCH_PORT} || 9888;
     my $proto = getprotobyname('tcp');
@@ -31,6 +29,14 @@ $SIG{INT} = sub {die};
     bind($server, sockaddr_in($port, INADDR_ANY)) or die "bind: $!\n";
     listen($server, SOMAXCONN);
     print "Listening on $port\n" if $v;
+
+    sub cleanup {
+        kill 'KILL', $pid;
+        die;
+    }
+
+    $SIG{INT} = *cleanup;
+    $SIG{TERM} = *cleanup;
 
     my(%clients);
 
