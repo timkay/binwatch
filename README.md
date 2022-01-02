@@ -45,7 +45,7 @@ For example:
 
 A sample client is provided by client.pl. To run:
 
-```BINWATCH_HOST=bob:9999 make client```
+```BINWATCH_HOST=bob.example.com:9999 make client```
 
 The host and port default to 127.0.0.1:9888.
 
