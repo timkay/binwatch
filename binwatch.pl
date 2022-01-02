@@ -14,9 +14,9 @@ $SIG{INT} = sub {die};
 
 {
     my($buffer);
-    my $seq = 'C00';
+    my $seq = 'C00';            # name each client for easier log reading
 
-    my($USER, $PASS, $HOST) = $ENV{MYSQL_SERVER} =~ /^(?: ([^\@\:]*)? (?:\:([^\@]*))? \@)? (.*)$/x;
+    my($USER, $PASS, $HOST) = ($ENV{MARIADB_SERVER} || $ENV{MYSQL_SERVER}) =~ /^(?: ([^\@\:]*)? (?:\:([^\@]*))? \@)? (.*)$/x;
     $HOST ||= '127.0.0.1';
     $USER ||= 'root';
 
@@ -24,7 +24,7 @@ $SIG{INT} = sub {die};
     print "docker run --rm -it --network host binwatch $cmd\n" if $v;
     open(my $binlog, "$cmd|") || die "mysqlbinlog: $!\n";
 
-    my $port = 8888;
+    my $port = ${BINWATCH_PORT} || 9888;
     my $proto = getprotobyname('tcp');
     socket(my $server, PF_INET, SOCK_STREAM, $proto) or die "socket: $!\n";
     setsockopt($server, SOL_SOCKET, SO_REUSEADDR, 1) or die "setsockopt: $!\n";
