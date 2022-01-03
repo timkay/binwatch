@@ -67,7 +67,10 @@ use IO::Handle;
                 #my $data = <$binlog>;
                 #my $n = length($data);
                 my $n = sysread($binlog, my $data, 4096);
-                print "sysread $n bytes\n" if $v;
+                print "binlog sysread $n bytes\n" if $v;
+                if ($n == 0) {
+                    die "binlog EOF\n";
+                }
                 $buffer .= $data;
                 for (;;) {
                     my @lines = split(/\r?\n/, $buffer, 2);
@@ -86,7 +89,7 @@ use IO::Handle;
                 }
             } else {
                 my $n = sysread($handle, my $data, 4096);
-                print "sysread on $handle ($n bytes)\n" if $v;
+                print "client sysread on $handle ($n bytes)\n" if $v;
                 if ($n == 0) {
                     # Client sends an empty package when closed.
                     $handle->close();
