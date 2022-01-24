@@ -11,6 +11,18 @@ use IO::Select;
 use IO::Handle;
 
 {
+
+    my($mysqlbinlog_pid);
+
+    sub cleanup {
+        kill 'KILL', $mysqlbinlog_pid;
+        die;
+    }
+
+    $SIG{INT} = *cleanup;
+    $SIG{TERM} = *cleanup;
+
+
     my($buffer);
     my $seq = 'C00';            # name each client for easier log reading
 
@@ -18,9 +30,8 @@ use IO::Handle;
     $HOST ||= '127.0.0.1';
     $USER ||= 'root';
 
-    my $cmd = "mysqlbinlog -R --host=$HOST --user=$USER --password=$PASS --stop-never --base64-output=decode-rows ''";
-    print "docker run --rm -it --network host binwatch $cmd\n" if $v;
-    my $pid = open(my $binlog, "$cmd|") || die "mysqlbinlog: $!\n";
+
+    # listen for clients
 
     my $port = ${BINWATCH_PORT} || 9888;
     my $proto = getprotobyname('tcp');
@@ -30,80 +41,110 @@ use IO::Handle;
     listen($server, SOMAXCONN);
     print "Listening on $port\n" if $v;
 
-    sub cleanup {
-        kill 'KILL', $pid;
-        die;
-    }
-
-    $SIG{INT} = *cleanup;
-    $SIG{TERM} = *cleanup;
 
     my(%clients);
 
     for (;;) {
-        my $rin = IO::Select->new();
-        my $win = IO::Select->new();
 
-        $rin->add($binlog);
-        $rin->add($server);
-        $rin->add($_->{handle}) for values %clients;
 
-        # Assume clients are always writeable. If a client blocks,
-        # then everything will block. Could be modified to queue
-        # up notifications.
-        #$win->add($_->{handle}) for values %clients;
+        # wait for MariaDB server
 
-        my($r, $w, $e) = IO::Select->select($rin, $win, $ein, undef);
-        for my $handle (@$r) {
-            if ($handle eq $server) {
-                my $paddr = accept(my $handle, $server);
-                my($port, $iaddr) = sockaddr_in($paddr);
-                $handle->autoflush;
-                $seq++;
-                $clients{$handle} = {seq => $seq, handle => $handle};
-                print "accept from @{[inet_ntoa($iaddr)]}:$port  $handle  $clients{$handle}{seq}\n" if $v;
-            } elsif ($handle eq $binlog) {
-                # Doesn't work this way: runs one line behind. Seems like a buffering problem.
-                #my $data = <$binlog>;
-                #my $n = length($data);
-                my $n = sysread($binlog, my $data, 4096);
-                print "binlog sysread $n bytes\n" if $v;
-                if ($n == 0) {
-                    die "binlog EOF\n";
-                }
-                $buffer .= $data;
-                for (;;) {
-                    my @lines = split(/\r?\n/, $buffer, 2);
-                    last if @lines < 2;
-                    (my $line, $buffer) = @lines;
-                    # print "binlog line (@{[length $line]} bytes) $line\n" if $v;
-                    if ($line =~ /^#Q>/) {
-                        my($table);
-                        my($q, $st, @token) = split(/\s+/, lc $line);
-                        if ($st ~~ [qw(alter delete insert replace update)]) {
-                            shift @token while $token[0] ~~ [qw(delayed from high_priority ignore into low_priority quick table)];
-                            $table = $token[0];
-                            print {$_->{handle}} "$table\n" for values %clients;
+        my($binlog);
+
+        # add --start-position or --start-datetime
+        my $read = "--read-from-remote-server";
+        my $host = "--host=$HOST";
+        my $user = "--user=$USER";
+        my $password = "--password=$PASS";
+        my $base64 = "--base64-output=decode-rows";
+        #my $database = "--database test";
+        #my $counts = "--print-row-count";
+        my $short = "--short-form";
+        my $verbose = "--verbose";
+        # The '' at the end says to start with the first binlog. We
+        # really only need to start with the last binlog, but then we
+        # would have to do a mysql query to get that
+        # information. Could add later.
+        my $cmd = "mysqlbinlog $read $host $user $password $base64 $database $counts $short $verbose --stop-never ''";
+        print $cmd if $v;
+        $mysqlbinlog_pid = open($binlog, "$cmd|") || die "mysqlbinlog: $!\n";
+
+        # process IO events
+
+      healthy:
+        for (;;) {
+            my $rin = IO::Select->new();
+            my $win = IO::Select->new();
+
+            $rin->add($binlog);
+            $rin->add($server);
+            $rin->add($_->{handle}) for values %clients;
+
+            # Assume clients are always writeable. If a client blocks,
+            # then everything will block. Could be modified to queue
+            # up notifications.
+            #$win->add($_->{handle}) for values %clients;
+
+            my($r, $w, $e) = IO::Select->select($rin, $win, $ein, undef);
+            for my $handle (@$r) {
+                if ($handle eq $server) {
+                    my $paddr = accept(my $handle, $server);
+                    my($port, $iaddr) = sockaddr_in($paddr);
+                    $handle->autoflush;
+                    $seq++;
+                    $clients{$handle} = {seq => $seq, handle => $handle};
+                    print "accept from @{[inet_ntoa($iaddr)]}:$port  $handle  $clients{$handle}{seq}\n" if $v;
+                } elsif ($handle eq $binlog) {
+                    # Doesn't work this way: runs one line behind. Seems like a buffering problem.
+                    #my $data = <$binlog>;
+                    #my $n = length($data);
+                    my $n = sysread($binlog, my $data, 4096);
+                    print "binlog sysread $n bytes\n" if $v;
+                    print "---\n", $data if $vv;
+                    if ($n == 0) {
+                        warn "binlog EOF\n";
+                        last healthy;
+                    }
+                    $buffer .= $data;
+                    for (;;) {
+                        my @lines = split(/\r?\n/, $buffer, 2);
+                        last if @lines < 2;
+                        (my $line, $buffer) = @lines;
+                        # print "binlog line (@{[length $line]} bytes) $line\n" if $v;
+                        $line =~ s/^#Q> //;
+                        if ($line !~ /^#/) {
+                            my($table);
+                            my($st, @token) = split(/\s+/, lc $line);
+                            if ($st ~~ [qw(alter delete insert replace update)]) {
+                                shift @token while $token[0] ~~ [qw(delayed from high_priority ignore into low_priority quick table)];
+                                $table = $token[0];
+                                print "$table\n";
+                                print {$_->{handle}} "$table\n" for values %clients;
+                            }
                         }
                     }
-                }
-            } else {
-                my $n = sysread($handle, my $data, 4096);
-                print "client sysread on $handle ($n bytes)\n" if $v;
-                if ($n == 0) {
-                    # Client sends an empty package when closed.
-                    $handle->close();
-                    print "closing $clients{$handle}{seq}\n" if $v;
-                    delete $clients{$handle};
                 } else {
-                    print "Subscriptions aren't supported yet.\n";
+                    my $n = sysread($handle, my $data, 4096);
+                    print "client sysread on $handle ($n bytes)\n" if $v;
+                    if ($n == 0) {
+                        # Client sends an empty package when closed.
+                        $handle->close();
+                        print "closing $clients{$handle}{seq}\n" if $v;
+                        delete $clients{$handle};
+                    } else {
+                        print "Subscriptions aren't supported yet.\n";
+                    }
                 }
             }
+
+            for my $handle (@$w) {
+                # Send next queued notice.
+                print "write on $clients{$handle}{seq}\n";
+            }
+
         }
-        for my $handle (@$w) {
-            # Send next queued notice.
-            print "write on $clients{$handle}{seq}\n";
-        }
+
+        sleep 3;
     }
 
     print "Exiting...\n";
