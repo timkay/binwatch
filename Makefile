@@ -1,4 +1,6 @@
-MARIADB_SERVER = 192.168.2.23
+
+MARIADB_SERVER ?= 127.0.0.1
+BINWATCH_HOST  ?= 127.0.0.1
 
 build:
 	docker build -q . -t timkay/binwatch
@@ -31,4 +33,4 @@ push:
 	docker push timkay/binwatch
 
 client:
-	while true; do BINWATCH_HOST=${MARIADB_SERVER} ./client.pl; sleep 1; done
+	while true; do BINWATCH_HOST=${BINWATCH_HOST} ./client.pl; sleep 1; done
